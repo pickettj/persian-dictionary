@@ -13,6 +13,7 @@ Set-up
 import sqlite3, os
 import pandas as pd
 import re
+import inspect
 
 #set home directory path
 hdir = os.path.expanduser('~')
@@ -30,6 +31,21 @@ def connect_to_existing_database(database_path):
 
 # Then call it when needed
 conn = connect_to_existing_database(database_path)
+print(f"✅ Connected to Persian/Pahlavi Dictionary database")
+
+# Set path to Pahlavi corpus descriptive data
+corpus_data_path = os.path.join(hdir, 'Dropbox/Active_Directories/Digital_Humanities/Datasets/pahlavi_corpus_descriptive_data')
+
+# Read in the three CSV files as dataframes
+print("\n📊 Loading Pahlavi corpus descriptive data...")
+pah_freq = pd.read_csv(os.path.join(corpus_data_path, 'pah_freqdic.csv'), encoding='utf-8')
+print(f"  ✅ Frequency dictionary: {len(pah_freq):,} entries")
+
+pah_bigrams = pd.read_csv(os.path.join(corpus_data_path, 'pah_con_freq.csv'), encoding='utf-8')
+print(f"  ✅ Bigrams (conditional frequency): {len(pah_bigrams):,} entries")
+
+pah_phrases = pd.read_csv(os.path.join(corpus_data_path, 'pah_phrases.csv'), encoding='utf-8')
+print(f"  ✅ Phrases (trigrams): {len(pah_phrases):,} entries")
 
 def database_info(table_name=None, show_columns=False):
     """
@@ -383,6 +399,54 @@ def pah_simp_search(search_term, max_results=5):
                     print(f"   📖 {definition}")
                 else:
                     print(f"   📖 No definition available")
+                
+                # Add frequency information from pah_freq dataframe
+                freq_match = pah_freq[pah_freq['word'] == matched_form]
+                if not freq_match.empty:
+                    freq_count = freq_match['frequency'].values[0]
+                    
+                    # Calculate "top X%" by finding what % of words are MORE frequent
+                    # E.g., if 95% of words are more frequent, this is a rare word (top 95%)
+                    # E.g., if 5% of words are more frequent, this is a common word (top 5%)
+                    words_more_frequent = (pah_freq['frequency'] > freq_count).sum()
+                    percentile = (words_more_frequent / len(pah_freq)) * 100
+                    print(f"   📊 Frequency: Top {percentile:.1f}% ({freq_count:,} occurrences)")
+                    
+                    # Add bigram information if word appears frequently enough (>5 occurrences)
+                    if freq_count > 5:
+                        # Find words that often PRECEDE this word (this word is second_word)
+                        preceded_by = pah_bigrams[pah_bigrams['second_word'] == matched_form]
+                        if not preceded_by.empty:
+                            # Get the most common preceding word
+                            top_preceding = preceded_by.nlargest(1, 'frequency')
+                            preceding_word = top_preceding['first_word'].values[0]
+                            preceding_freq = top_preceding['frequency'].values[0]
+                            print(f"   ⬅️  Often preceded by: {preceding_word} ({preceding_freq:,})")
+                        
+                        # Find words that often FOLLOW this word (this word is first_word)
+                        followed_by = pah_bigrams[pah_bigrams['first_word'] == matched_form]
+                        if not followed_by.empty:
+                            # Get the most common following word
+                            top_following = followed_by.nlargest(1, 'frequency')
+                            following_word = top_following['second_word'].values[0]
+                            following_freq = top_following['frequency'].values[0]
+                            print(f"   ➡️  Often followed by: {following_word} ({following_freq:,})")
+                        
+                        # Find phrases (trigrams) containing this word in any position
+                        phrases_with_word = pah_phrases[
+                            (pah_phrases['first_word'] == matched_form) |
+                            (pah_phrases['second_word'] == matched_form) |
+                            (pah_phrases['third_word'] == matched_form)
+                        ]
+                        
+                        if not phrases_with_word.empty:
+                            # Get top 3 most frequent phrases
+                            top_phrases = phrases_with_word.nlargest(3, 'frequency')
+                            print(f"   📝 Common phrases:")
+                            for idx, row in top_phrases.iterrows():
+                                phrase = f"{row['first_word']} {row['second_word']} {row['third_word']}"
+                                print(f"      • {phrase} ({row['frequency']:,})")
+                
                 print()
         else:
             print("   No matches found\n")
@@ -543,9 +607,68 @@ def pah_simp_search(search_term, max_results=5):
         print("=" * 80)
         print(f"📊 SUMMARY: {total_pahlavi} Pahlavi results, {total_new_persian} New Persian lookups")
         print(f"   Pahlavi Words: {len(pahlavi_words_results)} | Examples: {len(examples_results if matched_uids else [])} | Malandra: {len(malandra_results)}")
+        
+        # If no results found in dictionaries, search the frequency dictionary
+        if total_pahlavi == 0:
+            print("\n" + "=" * 80)
+            print("🔍 NO DICTIONARY MATCHES - SEARCHING FREQUENCY DICTIONARY")
+            print("=" * 80)
+            
+            # Search frequency dictionary using regex
+            # Filter for words matching the search pattern (case-insensitive)
+            freq_matches = pah_freq[pah_freq['word'].str.contains(search_term, regex=True, na=False, flags=re.IGNORECASE)]
+            
+            if not freq_matches.empty:
+                # Sort by frequency (most common first) and limit to 20
+                freq_matches_sorted = freq_matches.sort_values('frequency', ascending=False).head(20)
+                
+                print(f"\nFound {len(freq_matches)} matching tokens in corpus (showing top 20 by frequency):\n")
+                print(f"{'Word':<30} {'Frequency':>15}")
+                print("-" * 50)
+                
+                for idx, row in freq_matches_sorted.iterrows():
+                    print(f"{row['word']:<30} {row['frequency']:>15,}")
+                
+                print("\n" + "=" * 80)
+                print(f"💡 TIP: These words appear in the corpus but not in dictionaries.")
+                print(f"    Try searching individual words for more context.")
+            else:
+                print(f"\n❌ No matches found in frequency dictionary either.")
 
     except Exception as e:
         print(f"❌ Search error: {e}")
     finally:
         cursor.close()
         conn.close()
+
+# Display available functions
+print("\n" + "=" * 70)
+print("📚 AVAILABLE FUNCTIONS")
+print("=" * 70)
+
+# Get all functions defined in this module
+import sys
+current_module = sys.modules[__name__]
+functions = [name for name in dir(current_module) 
+             if callable(getattr(current_module, name)) and not name.startswith('_')]
+
+for func_name in functions:
+    func = getattr(current_module, func_name)
+    
+    # Get function signature
+    try:
+        sig = inspect.signature(func)
+        func_signature = f"{func_name}{sig}"
+    except:
+        func_signature = f"{func_name}()"
+    
+    # Get docstring
+    docstring = func.__doc__
+    if docstring:
+        first_line = docstring.strip().split('\n')[0]
+        print(f"   • {func_signature}")
+        print(f"     {first_line}")
+    else:
+        print(f"   • {func_signature}")
+
+print("=" * 70)
